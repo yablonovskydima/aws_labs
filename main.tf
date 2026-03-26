@@ -62,7 +62,6 @@ resource "aws_lb_listener" "main" {
   }
 }
 
-# ── Task 3: Application Gateway (аналог Azure Application Gateway) ──
 resource "aws_lb" "appgw" {
   name = "az104-appgw"
   internal = false
@@ -96,7 +95,6 @@ resource "aws_lb_listener" "appgw" {
   }
 }
 
-# path-based routing: /image/* → images, /video/* → videos
 resource "aws_lb_listener_rule" "images" {
   listener_arn = aws_lb_listener.appgw.arn
   priority = 10
