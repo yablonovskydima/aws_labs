@@ -4,123 +4,71 @@ provider "aws" {
   secret_key = var.secret_key
 }
 
+resource "aws_s3_bucket" "main" {
+  bucket = "az104-rg7-storage-${random_id.suffix.hex}"
+  tags = { Name = "az104-rg7-storage" }
+}
+
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket_versioning" "main" {
+  bucket = aws_s3_bucket.main.id
+  versioning_configuration { status = "Enabled" }
+}
+
+resource "aws_s3_bucket_public_access_block" "main" {
+  bucket = aws_s3_bucket.main.id
+  block_public_acls = true
+  block_public_policy = true
+  ignore_public_acls = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "main" {
+  bucket = aws_s3_bucket.main.id
+
+  rule {
+    id = "Movetocool"
+    status = "Enabled"
+
+    transition {
+      days= 30
+      storage_class = "STANDARD_IA" # аналог Cool storage
+    }
+
+    filter {}
+  }
+}
+
+resource "aws_s3_object" "sample" {
+  bucket = aws_s3_bucket.main.id
+  key = "securitytest/sample.txt"
+  content = "Hello from az104 lab"
+}
+
+resource "aws_efs_file_system" "share1" {
+  tags = { Name = "share1" }
+}
+
 resource "aws_vpc" "main" {
-  cidr_block = "10.60.0.0/16"
-  tags = { Name = "az104-06-vnet" }
+  cidr_block = "10.0.0.0/16"
+  tags = { Name = "vnet1" }
 }
 
-resource "aws_subnet" "subnet1" {
+resource "aws_subnet" "default" {
   vpc_id = aws_vpc.main.id
-  cidr_block = "10.60.1.0/24"
+  cidr_block = "10.0.0.0/24"
   availability_zone = "eu-north-1a"
-  tags = { Name = "subnet1" }
+  tags = { Name = "default" }
 }
 
-resource "aws_subnet" "subnet2" {
+resource "aws_vpc_endpoint" "s3" {
   vpc_id = aws_vpc.main.id
-  cidr_block = "10.60.2.0/24"
-  availability_zone = "eu-north-1b"
-  tags = { Name = "subnet2" }
-}
+  service_name = "com.amazonaws.eu-north-1.s3"
 
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
-  tags = { Name = "az104-06-igw" }
-}
+  route_table_ids = [aws_vpc.main.default_route_table_id]
 
-resource "aws_lb" "main" {
-  name = "az104-lb"
-  internal = false
-  load_balancer_type = "network"
-  subnets = [aws_subnet.subnet1.id, aws_subnet.subnet2.id]
-  tags = { Name = "az104-lb" }
-}
-
-resource "aws_lb_target_group" "main" {
-  name = "az104-be"
-  port = 80
-  protocol = "TCP"
-  vpc_id = aws_vpc.main.id
-
-  health_check {
-    protocol = "TCP"
-    port = 80
-    interval = 30
-    healthy_threshold = 2
-    unhealthy_threshold = 2
-  }
-}
-
-resource "aws_lb_listener" "main" {
-  load_balancer_arn = aws_lb.main.arn
-  port = 80
-  protocol = "TCP"
-
-  default_action {
-    type = "forward"
-    target_group_arn = aws_lb_target_group.main.arn
-  }
-}
-
-# ── Task 3: Application Gateway (аналог Azure Application Gateway) ──
-resource "aws_lb" "appgw" {
-  name = "az104-appgw"
-  internal = false
-  load_balancer_type = "application"
-  subnets = [aws_subnet.subnet1.id, aws_subnet.subnet2.id]
-  tags = { Name = "az104-appgw" }
-}
-
-resource "aws_lb_target_group" "images" {
-  name = "az104-imagebe"
-  port = 80
-  protocol = "HTTP"
-  vpc_id  = aws_vpc.main.id
-}
-
-resource "aws_lb_target_group" "videos" {
-  name = "az104-videobe"
-  port = 80
-  protocol = "HTTP"
-  vpc_id = aws_vpc.main.id
-}
-
-resource "aws_lb_listener" "appgw" {
-  load_balancer_arn = aws_lb.appgw.arn
-  port = 80
-  protocol = "HTTP"
-
-  default_action {
-    type = "forward"
-    target_group_arn = aws_lb_target_group.images.arn
-  }
-}
-
-# path-based routing: /image/* → images, /video/* → videos
-resource "aws_lb_listener_rule" "images" {
-  listener_arn = aws_lb_listener.appgw.arn
-  priority = 10
-
-  action {
-    type = "forward"
-    target_group_arn = aws_lb_target_group.images.arn
-  }
-
-  condition {
-    path_pattern { values = ["/image/*"] }
-  }
-}
-
-resource "aws_lb_listener_rule" "videos" {
-  listener_arn = aws_lb_listener.appgw.arn
-  priority = 20
-
-  action {
-    type = "forward"
-    target_group_arn = aws_lb_target_group.videos.arn
-  }
-
-  condition {
-    path_pattern { values = ["/video/*"] }
-  }
+  tags = { Name = "s3-endpoint" }
 }
