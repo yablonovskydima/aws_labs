@@ -4,71 +4,150 @@ provider "aws" {
   secret_key = var.secret_key
 }
 
-resource "aws_s3_bucket" "main" {
-  bucket = "az104-rg7-storage-${random_id.suffix.hex}"
-  tags = { Name = "az104-rg7-storage" }
+resource "aws_vpc" "main" {
+  cidr_block = "10.82.0.0/20"
+  tags = { Name = "vmss-vnet" }
 }
 
-resource "random_id" "suffix" {
-  byte_length = 4
+resource "aws_subnet" "zone_a" {
+  vpc_id = aws_vpc.main.id
+  cidr_block = "10.82.0.0/24"
+  availability_zone = "eu-north-1a"
+  tags = { Name = "subnet-zone-a" }
 }
 
-resource "aws_s3_bucket_versioning" "main" {
-  bucket = aws_s3_bucket.main.id
-  versioning_configuration { status = "Enabled" }
+resource "aws_subnet" "zone_b" {
+  vpc_id = aws_vpc.main.id
+  cidr_block = "10.82.1.0/24"
+  availability_zone = "eu-north-1b"
+  tags = { Name = "subnet-zone-b" }
 }
 
-resource "aws_s3_bucket_public_access_block" "main" {
-  bucket = aws_s3_bucket.main.id
-  block_public_acls = true
-  block_public_policy = true
-  ignore_public_acls = true
-  restrict_public_buckets = true
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  tags = { Name = "vmss-igw" }
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "main" {
-  bucket = aws_s3_bucket.main.id
+resource "aws_instance" "vm1" {
+  ami = "ami-09a9858973b288bdd"
+  instance_type = "t3.micro"
+  subnet_id = aws_subnet.zone_a.id
+  availability_zone = "eu-north-1a"
+  tags = { Name = "az104-vm1" }
+}
 
-  rule {
-    id = "Movetocool"
-    status = "Enabled"
+resource "aws_instance" "vm2" {
+  ami = "ami-09a9858973b288bdd"
+  instance_type = "t3.micro"
+  subnet_id = aws_subnet.zone_b.id
+  availability_zone = "eu-north-1b"
+  tags = { Name = "az104-vm2" }
+}
 
-    transition {
-      days= 30
-      storage_class = "STANDARD_IA" # аналог Cool storage
-    }
+resource "aws_security_group" "vmss_sg" {
+  name   = "vmss1-nsg"
+  vpc_id = aws_vpc.main.id
 
-    filter {}
+  ingress {
+    from_port = 80
+    to_port = 80
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "allow-http"
+  }
+
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "vmss1-nsg" }
+}
+
+resource "aws_launch_template" "vmss" {
+  name = "vmss1-template"
+  image_id = "ami-09a9858973b288bdd"
+  instance_type = "t3.micro"
+
+  network_interfaces {
+    security_groups = [aws_security_group.vmss_sg.id]
+  }
+
+  tags = { Name = "vmss1" }
+}
+
+resource "aws_autoscaling_group" "vmss" {
+  name = "vmss1"
+
+  min_size = 2
+  max_size = 10
+  desired_capacity = 2
+
+  vpc_zone_identifier = [
+    aws_subnet.zone_a.id,
+    aws_subnet.zone_b.id,
+  ]
+
+  launch_template {
+    id = aws_launch_template.vmss.id
+    version = "$Latest"
+  }
+
+  tag {
+    key = "Name"
+    value = "vmss1-instance"
+    propagate_at_launch = true
   }
 }
 
-resource "aws_s3_object" "sample" {
-  bucket = aws_s3_bucket.main.id
-  key = "securitytest/sample.txt"
-  content = "Hello from az104 lab"
+resource "aws_autoscaling_policy" "scale_out" {
+  name = "scale-out"
+  autoscaling_group_name = aws_autoscaling_group.vmss.name
+  policy_type = "SimpleScaling"
+  adjustment_type = "PercentChangeInCapacity"
+  scaling_adjustment = 50
+  cooldown = 300
 }
 
-resource "aws_efs_file_system" "share1" {
-  tags = { Name = "share1" }
+resource "aws_cloudwatch_metric_alarm" "cpu_high" {
+  alarm_name = "cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods = 2
+  metric_name = "CPUUtilization"
+  namespace = "AWS/EC2"
+  period = 300
+  statistic = "Average"
+  threshold = 70
+  alarm_actions = [aws_autoscaling_policy.scale_out.arn]
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.vmss.name
+  }
 }
 
-resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
-  tags = { Name = "vnet1" }
+resource "aws_autoscaling_policy" "scale_in" {
+  name = "scale-in"
+  autoscaling_group_name = aws_autoscaling_group.vmss.name
+  policy_type = "SimpleScaling"
+  adjustment_type = "PercentChangeInCapacity"
+  scaling_adjustment = -50
+  cooldown = 300
 }
 
-resource "aws_subnet" "default" {
-  vpc_id = aws_vpc.main.id
-  cidr_block = "10.0.0.0/24"
-  availability_zone = "eu-north-1a"
-  tags = { Name = "default" }
-}
+resource "aws_cloudwatch_metric_alarm" "cpu_low" {
+  alarm_name = "cpu-low"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods = 2
+  metric_name = "CPUUtilization"
+  namespace = "AWS/EC2"
+  period = 300
+  statistic = "Average"
+  threshold = 30
+  alarm_actions = [aws_autoscaling_policy.scale_in.arn]
 
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id = aws_vpc.main.id
-  service_name = "com.amazonaws.eu-north-1.s3"
-
-  route_table_ids = [aws_vpc.main.default_route_table_id]
-
-  tags = { Name = "s3-endpoint" }
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.vmss.name
+  }
 }
